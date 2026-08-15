@@ -12,9 +12,11 @@ terminal UI.
 
 ## Status
 
-Early scaffold. The Reddit scraper, database layer, and TUI are functional for a
-single subreddit's "new" listing; downloading, pagination past one run, and richer
-TUI screens (scrape history, search, filtering) are open for contribution — see
+Early scaffold. Scraping a single subreddit's "new" listing, storing posts, and
+downloading direct media links (skipping self-posts and anything that isn't a
+plain image/video URL) all work end to end. Concurrent downloads, resolving
+indirect media (Reddit galleries, `v.redd.it`, imgur albums), and richer TUI
+screens (scrape history, search, filtering) are open for contribution — see
 [CONTRIBUTING.md](CONTRIBUTING.md) and the open issues.
 
 ## Responsible use

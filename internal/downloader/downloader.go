@@ -9,9 +9,43 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 )
+
+// mediaExtensions are file extensions this downloader knows how to save as
+// direct media. It intentionally doesn't cover indirect media — Reddit
+// gallery pages, v.redd.it DASH manifests, imgur album pages — which need
+// their own resolution step before there's a direct URL to fetch; see
+// CONTRIBUTING.md.
+var mediaExtensions = map[string]bool{
+	".jpg":  true,
+	".jpeg": true,
+	".png":  true,
+	".gif":  true,
+	".webp": true,
+	".mp4":  true,
+	".webm": true,
+	".mov":  true,
+}
+
+// LooksLikeMedia reports whether rawURL points directly at a file this
+// downloader can save, based on its extension.
+func LooksLikeMedia(rawURL string) bool {
+	return mediaExtensions[mediaExt(rawURL)]
+}
+
+// mediaExt returns the lowercased file extension from rawURL's path,
+// ignoring any query string or fragment.
+func mediaExt(rawURL string) string {
+	if u, err := url.Parse(rawURL); err == nil {
+		return strings.ToLower(path.Ext(u.Path))
+	}
+	return strings.ToLower(path.Ext(rawURL))
+}
 
 // Result describes a completed (or deduplicated) download.
 type Result struct {
@@ -71,7 +105,7 @@ func Download(ctx context.Context, client *http.Client, sourceURL, destDir strin
 	}
 
 	sum := hex.EncodeToString(hasher.Sum(nil))
-	finalPath := filepath.Join(destDir, sum+filepath.Ext(sourceURL))
+	finalPath := filepath.Join(destDir, sum+mediaExt(sourceURL))
 
 	if _, err := os.Stat(finalPath); err == nil {
 		return Result{Path: finalPath, SHA256: sum, Deduped: true}, nil

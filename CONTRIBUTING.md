@@ -45,11 +45,14 @@ run is required before merge.
 
 - `internal/reddit`: pagination helper that drives `Listing` across multiple pages
   automatically, respecting Reddit's rate-limit headers
-- `internal/downloader`: wire the downloader into `cmd/scraper` so posts are
-  fetched to disk, not just recorded in the database
+- `cmd/scraper`: a worker pool for concurrent downloads instead of one-at-a-time
+- `internal/downloader`: resolve indirect media — Reddit gallery posts, `v.redd.it`
+  DASH manifests, imgur albums — into direct URLs `LooksLikeMedia`/`Download` can
+  use; right now those post types are scraped but not downloaded
 - `cmd/tui`: a scrape-history screen backed by the `ScrapeRun` table
 - `cmd/tui`: search/filter posts by subreddit or title substring
-- Perceptual-hash or byte-identical duplicate detection across downloaded files
+- Perceptual-hash duplicate detection across downloaded files (byte-identical dedup
+  via SHA256 already works)
 
 If you're planning something larger, open an issue first so the approach can be
 discussed before you invest the time.
