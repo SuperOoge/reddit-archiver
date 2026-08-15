@@ -1,0 +1,9 @@
+{
+  "user_agent": "reddit-archiver/0.1 (by u/your-username)",
+  "db_path": "reddit-archiver.db",
+  "download_path": "downloads",
+  "subreddits": [
+    "earthporn",
+    "wallpapers"
+  ]
+}

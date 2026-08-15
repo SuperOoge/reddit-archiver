@@ -1,0 +1,10 @@
+/bin/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+/downloads/
+/coverage.out
+/coverage.html
+config.json
+.env
