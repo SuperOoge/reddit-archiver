@@ -1,7 +1,6 @@
 # reddit-archiver
 
 [![CI](https://github.com/SuperOoge/reddit-archiver/actions/workflows/ci.yml/badge.svg)](https://github.com/SuperOoge/reddit-archiver/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/SuperOoge/reddit-archiver)](https://goreportcard.com/report/github.com/SuperOoge/reddit-archiver)
 [![Go Reference](https://pkg.go.dev/badge/github.com/SuperOoge/reddit-archiver.svg)](https://pkg.go.dev/github.com/SuperOoge/reddit-archiver)
 [![Go version](https://img.shields.io/github/go-mod/go-version/SuperOoge/reddit-archiver)](go.mod)
 [![License: MIT](https://img.shields.io/github/license/SuperOoge/reddit-archiver)](LICENSE)
