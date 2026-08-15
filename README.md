@@ -11,6 +11,15 @@ single subreddit's "new" listing; downloading, pagination past one run, and rich
 TUI screens (scrape history, search, filtering) are open for contribution — see
 [CONTRIBUTING.md](CONTRIBUTING.md) and the open issues.
 
+## Responsible use
+
+This tool talks to Reddit's public JSON endpoints (`/r/<subreddit>/new.json`).
+Respect Reddit's [API terms](https://www.redditinc.com/policies/data-api-terms) and
+rate limits — the default `Client` honors the `-subreddit`/`-pages` scope you give
+it and doesn't attempt to evade rate limiting or authentication requirements.
+Scraped content stays subject to whatever license/rights its original poster has
+over it; this tool is for personal archiving, not redistribution.
+
 ## Requirements
 
 - Go 1.26+
@@ -62,7 +71,9 @@ Run `make lint` and `make test` before opening a pull request.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). Participation is governed by the
+[Code of Conduct](CODE_OF_CONDUCT.md). Found a security issue? See
+[SECURITY.md](SECURITY.md).
 
 ## License
 
