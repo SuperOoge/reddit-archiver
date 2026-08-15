@@ -68,4 +68,8 @@ jobs:
     steps:
       - uses: golang/govulncheck-action@v1
         with:
+          # go-version-input defaults to "stable" and wins over go-version-file
+          # when both are set, silently ignoring the go.mod pin. Clear it so
+          # this job actually honors go.mod, same as the other three jobs.
+          go-version-input: ""
           go-version-file: go.mod
