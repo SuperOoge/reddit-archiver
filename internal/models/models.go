@@ -25,6 +25,12 @@ type Post struct {
 	Permalink  string
 	CreatedAt  time.Time
 	ScrapedAt  time.Time `gorm:"not null"`
+
+	// Download state. LocalPath is empty until the media at URL has been
+	// fetched; SHA256 is the content hash the downloader dedups on.
+	LocalPath    string
+	SHA256       string
+	DownloadedAt *time.Time
 }
 
 // TableName pins the table name so it stays stable across GORM's

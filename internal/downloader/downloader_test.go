@@ -81,3 +81,41 @@ func TestDownloadErrorStatus(t *testing.T) {
 		t.Fatal("Download: expected error on 404, got nil")
 	}
 }
+
+func TestDownloadQueryString(t *testing.T) {
+	const body = "bytes behind a query string"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	res, err := Download(context.Background(), srv.Client(), srv.URL+"/image.png?width=640&auto=webp", dir)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if filepath.Ext(res.Path) != ".png" {
+		t.Errorf("Path = %q, want .png extension (not the query string)", res.Path)
+	}
+}
+
+func TestLooksLikeMedia(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"https://i.redd.it/abc123.jpg", true},
+		{"https://i.redd.it/abc123.JPEG", true},
+		{"https://i.imgur.com/abc123.png?width=640", true},
+		{"https://example.com/video.mp4", true},
+		{"https://www.reddit.com/r/golang/comments/abc123/some_title/", false},
+		{"https://v.redd.it/abc123", false},
+		{"https://imgur.com/a/abc123", false},
+		{"not a url at all", false},
+	}
+	for _, tc := range cases {
+		if got := LooksLikeMedia(tc.url); got != tc.want {
+			t.Errorf("LooksLikeMedia(%q) = %v, want %v", tc.url, got, tc.want)
+		}
+	}
+}
