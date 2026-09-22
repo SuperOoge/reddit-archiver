@@ -30,6 +30,11 @@ type Config struct {
 	// whatever host is actually serving the media.
 	DownloadConcurrency int `json:"download_concurrency"`
 
+	// PerceptualHashDistance is the maximum Hamming distance between two
+	// images' difference-hashes (64 bits total) for the newer one to be
+	// flagged as a near-duplicate of the older. Lower is stricter.
+	PerceptualHashDistance int `json:"perceptual_hash_distance"`
+
 	// Subreddits is the default set of subreddits to scrape when none are
 	// passed on the command line.
 	Subreddits []string `json:"subreddits"`
@@ -40,10 +45,11 @@ type Config struct {
 // defaults, and a missing .env file is silently skipped.
 func Load(path, envPath string) (*Config, error) {
 	cfg := &Config{
-		UserAgent:           "reddit-archiver/0.1 (by u/replace-me)",
-		DBPath:              "reddit-archiver.db",
-		DownloadPath:        "downloads",
-		DownloadConcurrency: 4,
+		UserAgent:              "reddit-archiver/0.1 (by u/replace-me)",
+		DBPath:                 "reddit-archiver.db",
+		DownloadPath:           "downloads",
+		DownloadConcurrency:    4,
+		PerceptualHashDistance: 8,
 	}
 
 	if data, err := os.ReadFile(path); err == nil { // #nosec G304 -- path is an operator-supplied CLI flag, not untrusted input

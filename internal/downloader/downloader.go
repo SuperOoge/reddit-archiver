@@ -7,6 +7,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"image"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,6 +18,9 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/corona10/goimagehash"
+	"golang.org/x/image/webp"
 )
 
 // mediaExtensions are file extensions this downloader knows how to save as
@@ -56,6 +63,11 @@ type Result struct {
 	// Deduped is true when a file with this hash already existed and the
 	// download was skipped.
 	Deduped bool
+	// PHash is a difference-hash of the image content, serialized via
+	// goimagehash's ToString, for near-duplicate detection by the caller.
+	// Empty when sourceURL isn't a format we can decode as an image (e.g.
+	// video) or decoding/hashing failed — neither case fails the download.
+	PHash string
 }
 
 // Download fetches sourceURL and saves it under destDir, named by the
@@ -106,9 +118,10 @@ func Download(ctx context.Context, client *http.Client, sourceURL, destDir strin
 
 	sum := hex.EncodeToString(hasher.Sum(nil))
 	finalPath := filepath.Join(destDir, sum+mediaExt(sourceURL))
+	phash := perceptualHash(tmpPath, mediaExt(sourceURL))
 
 	if _, err := os.Stat(finalPath); err == nil {
-		return Result{Path: finalPath, SHA256: sum, Deduped: true}, nil
+		return Result{Path: finalPath, SHA256: sum, Deduped: true, PHash: phash}, nil
 	} else if !os.IsNotExist(err) {
 		return Result{}, fmt.Errorf("stat %q: %w", finalPath, err)
 	}
@@ -117,5 +130,44 @@ func Download(ctx context.Context, client *http.Client, sourceURL, destDir strin
 		return Result{}, fmt.Errorf("rename %q to %q: %w", tmpPath, finalPath, err)
 	}
 
-	return Result{Path: finalPath, SHA256: sum}, nil
+	return Result{Path: finalPath, SHA256: sum, PHash: phash}, nil
+}
+
+// imageDecoders maps a lowercased file extension to the stdlib (or
+// golang.org/x/image) decoder for that format. Video extensions are
+// intentionally absent — there's no perceptual-hash equivalent for them.
+var imageDecoders = map[string]func(io.Reader) (image.Image, error){
+	".jpg":  jpeg.Decode,
+	".jpeg": jpeg.Decode,
+	".png":  png.Decode,
+	".gif":  gif.Decode,
+	".webp": webp.Decode,
+}
+
+// perceptualHash computes a difference-hash of the image at path, for
+// near-duplicate detection by the caller. It returns "" if ext isn't a
+// format imageDecoders knows, or if opening, decoding, or hashing fails —
+// this is best-effort extra data, never a reason to fail the download.
+func perceptualHash(path, ext string) string {
+	decode, ok := imageDecoders[ext]
+	if !ok {
+		return ""
+	}
+
+	f, err := os.Open(path) // #nosec G304 -- path is our own just-written temp file, not user input
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+
+	img, err := decode(f)
+	if err != nil {
+		return ""
+	}
+
+	hash, err := goimagehash.DifferenceHash(img)
+	if err != nil {
+		return ""
+	}
+	return hash.ToString()
 }
