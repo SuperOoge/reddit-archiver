@@ -2,9 +2,11 @@ package reddit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -205,5 +207,87 @@ func TestClientListingErrorStatus(t *testing.T) {
 
 	if _, _, err := c.Listing(context.Background(), "golang", "", 0); err == nil {
 		t.Fatal("Listing: expected error on non-200 status, got nil")
+	}
+}
+
+func TestClientListingDecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer srv.Close()
+
+	c := NewClient("test-agent/1.0")
+	c.BaseURL = srv.URL
+
+	if _, _, err := c.Listing(context.Background(), "golang", "", 0); err == nil {
+		t.Fatal("Listing: expected error on invalid JSON, got nil")
+	}
+}
+
+func TestClientListingSendsCookie(t *testing.T) {
+	var gotCookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCookie = r.Header.Get("Cookie")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"after":"","children":[]}}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient("test-agent/1.0")
+	c.BaseURL = srv.URL
+	c.Cookie = "session=abc123"
+
+	if _, _, err := c.Listing(context.Background(), "golang", "", 0); err != nil {
+		t.Fatalf("Listing: %v", err)
+	}
+	if gotCookie != "session=abc123" {
+		t.Errorf("Cookie header = %q, want session=abc123", gotCookie)
+	}
+}
+
+func TestClientListingAllPropagatesFetchError(t *testing.T) {
+	requestCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount >= 2 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"after":"t3_next","children":[]}}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient("test-agent/1.0")
+	c.BaseURL = srv.URL
+
+	_, err := c.ListingAll(context.Background(), "golang", 0, 0)
+	if err == nil {
+		t.Fatal("ListingAll: expected error when a page fetch fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "fetch page 1") {
+		t.Errorf("error = %q, want it to mention \"fetch page 1\"", err.Error())
+	}
+}
+
+func TestClientListingAllContextCanceledDuringBackoff(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Ratelimit-Remaining", "1")
+		w.Header().Set("X-Ratelimit-Reset", "1")
+		_, _ = w.Write([]byte(`{"data":{"after":"t3_next","children":[]}}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient("test-agent/1.0")
+	c.BaseURL = srv.URL
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := c.ListingAll(ctx, "golang", 0, 0)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want context.DeadlineExceeded", err)
 	}
 }
