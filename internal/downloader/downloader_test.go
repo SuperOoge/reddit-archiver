@@ -99,6 +99,43 @@ func TestDownloadQueryString(t *testing.T) {
 	}
 }
 
+func TestDownloadNilClientUsesDefault(t *testing.T) {
+	const body = "bytes fetched via http.DefaultClient"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	res, err := Download(context.Background(), nil, srv.URL+"/image.png", dir)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if res.SHA256 == "" {
+		t.Error("SHA256 is empty")
+	}
+}
+
+func TestDownloadMkdirFailure(t *testing.T) {
+	dir := t.TempDir()
+	// A regular file where a directory component is expected: MkdirAll
+	// can't create anything under it.
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write blocker file: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("unreachable"))
+	}))
+	defer srv.Close()
+
+	destDir := filepath.Join(blocker, "sub")
+	if _, err := Download(context.Background(), srv.Client(), srv.URL+"/image.png", destDir); err == nil {
+		t.Fatal("Download: expected error when destDir can't be created, got nil")
+	}
+}
+
 func TestLooksLikeMedia(t *testing.T) {
 	cases := []struct {
 		url  string
