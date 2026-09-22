@@ -44,17 +44,39 @@ type listingResponse struct {
 	Data struct {
 		After    string `json:"after"`
 		Children []struct {
-			Data struct {
-				ID        string  `json:"id"`
-				Subreddit string  `json:"subreddit"`
-				Author    string  `json:"author"`
-				Title     string  `json:"title"`
-				URL       string  `json:"url"`
-				Permalink string  `json:"permalink"`
-				CreatedUT float64 `json:"created_utc"`
-			} `json:"data"`
+			Data childData `json:"data"`
 		} `json:"children"`
 	} `json:"data"`
+}
+
+// childData is one post's fields from a listing response.
+type childData struct {
+	ID        string  `json:"id"`
+	Subreddit string  `json:"subreddit"`
+	Author    string  `json:"author"`
+	Title     string  `json:"title"`
+	URL       string  `json:"url"`
+	Permalink string  `json:"permalink"`
+	CreatedUT float64 `json:"created_utc"`
+
+	// Gallery posts (reddit.com/gallery/...) hold multiple images; the
+	// direct URL for each is in MediaMetadata, ordered by GalleryData.
+	// See expandPost.
+	IsGallery   bool `json:"is_gallery"`
+	GalleryData *struct {
+		Items []struct {
+			MediaID string `json:"media_id"`
+		} `json:"items"`
+	} `json:"gallery_data"`
+	MediaMetadata map[string]struct {
+		Status string `json:"status"`
+		E      string `json:"e"` // "Image", "AnimatedImage", ...
+		S      struct {
+			U   string `json:"u"`   // direct URL, Image items
+			GIF string `json:"gif"` // direct URL, AnimatedImage items
+			MP4 string `json:"mp4"` // direct URL, AnimatedImage items
+		} `json:"s"`
+	} `json:"media_metadata"`
 }
 
 // Listing fetches one page of a subreddit's "new" feed. after is the
@@ -137,7 +159,10 @@ func (c *Client) listingPage(ctx context.Context, subreddit, after string, limit
 		limit = 100
 	}
 
-	u := fmt.Sprintf("%s/r/%s/new.json?limit=%d", c.BaseURL, url.PathEscape(subreddit), limit)
+	// raw_json=1 asks Reddit not to HTML-entity-escape string values —
+	// otherwise gallery image URLs (which contain query strings) come
+	// back with "&" as "&amp;", breaking them as URLs.
+	u := fmt.Sprintf("%s/r/%s/new.json?limit=%d&raw_json=1", c.BaseURL, url.PathEscape(subreddit), limit)
 	if after != "" {
 		u += "&after=" + url.QueryEscape(after)
 	}
@@ -169,19 +194,67 @@ func (c *Client) listingPage(ctx context.Context, subreddit, after string, limit
 	now := time.Now().UTC()
 	posts := make([]models.Post, 0, len(listing.Data.Children))
 	for _, child := range listing.Data.Children {
-		d := child.Data
-		posts = append(posts, models.Post{
-			Source:     models.SourceReddit,
-			ExternalID: d.ID,
-			Subreddit:  d.Subreddit,
-			Author:     d.Author,
-			Title:      d.Title,
-			URL:        d.URL,
-			Permalink:  "https://www.reddit.com" + d.Permalink,
-			CreatedAt:  time.Unix(int64(d.CreatedUT), 0).UTC(),
-			ScrapedAt:  now,
-		})
+		posts = append(posts, expandPost(child.Data, now)...)
 	}
 
 	return posts, listing.Data.After, resp.Header, nil
+}
+
+// expandPost converts one listing item into the Post row(s) it represents.
+// Almost every post is one row; a gallery post (IsGallery, with resolvable
+// GalleryData/MediaMetadata) becomes one row per image, each with its own
+// direct URL and an ExternalID of "<post ID>_<media ID>" so they coexist
+// under the (source, external_id) uniqueness constraint. A gallery post
+// whose media data is missing, or that has no resolvable items, falls back
+// to a single row using its own (gallery-page, non-direct) URL — same as
+// any other post type LooksLikeMedia doesn't recognize — so the post is
+// still recorded rather than silently dropped.
+func expandPost(d childData, scrapedAt time.Time) []models.Post {
+	base := models.Post{
+		Source:     models.SourceReddit,
+		ExternalID: d.ID,
+		Subreddit:  d.Subreddit,
+		Author:     d.Author,
+		Title:      d.Title,
+		URL:        d.URL,
+		Permalink:  "https://www.reddit.com" + d.Permalink,
+		CreatedAt:  time.Unix(int64(d.CreatedUT), 0).UTC(),
+		ScrapedAt:  scrapedAt,
+	}
+
+	if !d.IsGallery || d.GalleryData == nil || len(d.GalleryData.Items) == 0 {
+		return []models.Post{base}
+	}
+
+	var posts []models.Post
+	for _, item := range d.GalleryData.Items {
+		meta, ok := d.MediaMetadata[item.MediaID]
+		if !ok || meta.Status != "valid" {
+			continue
+		}
+
+		var mediaURL string
+		switch meta.E {
+		case "Image":
+			mediaURL = meta.S.U
+		case "AnimatedImage":
+			mediaURL = meta.S.GIF
+			if mediaURL == "" {
+				mediaURL = meta.S.MP4
+			}
+		}
+		if mediaURL == "" {
+			continue
+		}
+
+		post := base
+		post.ExternalID = d.ID + "_" + item.MediaID
+		post.URL = mediaURL
+		posts = append(posts, post)
+	}
+
+	if len(posts) == 0 {
+		return []models.Post{base}
+	}
+	return posts
 }

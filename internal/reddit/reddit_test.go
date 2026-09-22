@@ -66,8 +66,8 @@ func TestClientListing(t *testing.T) {
 	if gotPath != "/r/golang/new.json" {
 		t.Errorf("path = %q, want /r/golang/new.json", gotPath)
 	}
-	if gotQuery != "limit=50" {
-		t.Errorf("query = %q, want limit=50", gotQuery)
+	if gotQuery != "limit=50&raw_json=1" {
+		t.Errorf("query = %q, want limit=50&raw_json=1", gotQuery)
 	}
 	if after != "t3_next" {
 		t.Errorf("after = %q, want t3_next", after)
@@ -289,5 +289,144 @@ func TestClientListingAllContextCanceledDuringBackoff(t *testing.T) {
 	_, err := c.ListingAll(ctx, "golang", 0, 0)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("err = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+const fixtureGalleryListing = `{
+	"data": {
+		"after": "",
+		"children": [
+			{
+				"data": {
+					"id": "normal1",
+					"subreddit": "golang",
+					"title": "an ordinary post",
+					"url": "https://example.com/normal.png",
+					"permalink": "/r/golang/comments/normal1/x/",
+					"created_utc": 1700000000
+				}
+			},
+			{
+				"data": {
+					"id": "gallery1",
+					"subreddit": "golang",
+					"title": "a gallery post",
+					"url": "https://www.reddit.com/gallery/gallery1",
+					"permalink": "/r/golang/comments/gallery1/x/",
+					"created_utc": 1700000100,
+					"is_gallery": true,
+					"gallery_data": {
+						"items": [
+							{"media_id": "img1"},
+							{"media_id": "img2"},
+							{"media_id": "broken"}
+						]
+					},
+					"media_metadata": {
+						"img1": {
+							"status": "valid",
+							"e": "Image",
+							"s": {"u": "https://i.redd.it/img1.jpg?width=1080&auto=webp&s=abc"}
+						},
+						"img2": {
+							"status": "valid",
+							"e": "AnimatedImage",
+							"s": {"gif": "https://i.redd.it/img2.gif", "mp4": "https://i.redd.it/img2.mp4"}
+						},
+						"broken": {
+							"status": "failed",
+							"e": "Image",
+							"s": {}
+						}
+					}
+				}
+			}
+		]
+	}
+}`
+
+func TestClientListingExpandsGalleryIntoMultiplePosts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fixtureGalleryListing))
+	}))
+	defer srv.Close()
+
+	c := NewClient("test-agent/1.0")
+	c.BaseURL = srv.URL
+
+	posts, _, err := c.Listing(context.Background(), "golang", "", 0)
+	if err != nil {
+		t.Fatalf("Listing: %v", err)
+	}
+
+	// 1 normal post + 2 usable gallery images (the "broken" item is skipped).
+	if len(posts) != 3 {
+		t.Fatalf("len(posts) = %d, want 3: %+v", len(posts), posts)
+	}
+
+	normal, img1, img2 := posts[0], posts[1], posts[2]
+
+	if normal.ExternalID != "normal1" || normal.URL != "https://example.com/normal.png" {
+		t.Errorf("posts[0] (normal) = %+v, unexpected", normal)
+	}
+
+	if img1.ExternalID != "gallery1_img1" {
+		t.Errorf("img1.ExternalID = %q, want gallery1_img1", img1.ExternalID)
+	}
+	if img1.URL != "https://i.redd.it/img1.jpg?width=1080&auto=webp&s=abc" {
+		t.Errorf("img1.URL = %q, unexpected", img1.URL)
+	}
+	if img1.Title != "a gallery post" || img1.Permalink != "https://www.reddit.com/r/golang/comments/gallery1/x/" {
+		t.Errorf("img1 = %+v, want Title/Permalink inherited from the gallery post", img1)
+	}
+
+	if img2.ExternalID != "gallery1_img2" {
+		t.Errorf("img2.ExternalID = %q, want gallery1_img2", img2.ExternalID)
+	}
+	if img2.URL != "https://i.redd.it/img2.gif" {
+		t.Errorf("img2.URL = %q, want the gif URL preferred over mp4", img2.URL)
+	}
+}
+
+func TestClientListingGalleryFallsBackWithoutMediaData(t *testing.T) {
+	listing := `{
+		"data": {
+			"after": "",
+			"children": [
+				{
+					"data": {
+						"id": "gallery2",
+						"subreddit": "golang",
+						"url": "https://www.reddit.com/gallery/gallery2",
+						"permalink": "/r/golang/comments/gallery2/x/",
+						"created_utc": 1700000000,
+						"is_gallery": true
+					}
+				}
+			]
+		}
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(listing))
+	}))
+	defer srv.Close()
+
+	c := NewClient("test-agent/1.0")
+	c.BaseURL = srv.URL
+
+	posts, _, err := c.Listing(context.Background(), "golang", "", 0)
+	if err != nil {
+		t.Fatalf("Listing: %v", err)
+	}
+	if len(posts) != 1 {
+		t.Fatalf("len(posts) = %d, want 1 (fallback to a single row)", len(posts))
+	}
+	if posts[0].ExternalID != "gallery2" {
+		t.Errorf("ExternalID = %q, want gallery2 (unchanged, not expanded)", posts[0].ExternalID)
+	}
+	if posts[0].URL != "https://www.reddit.com/gallery/gallery2" {
+		t.Errorf("URL = %q, want the original gallery page URL", posts[0].URL)
 	}
 }
