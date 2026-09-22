@@ -2,9 +2,11 @@ package reddit
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 const fixtureListing = `{
@@ -101,6 +103,92 @@ func TestClientListingPagination(t *testing.T) {
 	}
 	if len(posts) != 0 {
 		t.Errorf("len(posts) = %d, want 0", len(posts))
+	}
+}
+
+func TestClientListingAllPaginatesUntilExhausted(t *testing.T) {
+	afters := []string{"t3_page2", "t3_page3", ""}
+	var requests []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.Query().Get("after"))
+		page := len(requests) - 1
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"data":{"after":%q,"children":[{"data":{"id":"post%d","subreddit":"golang","permalink":"/r/golang/comments/post%d/x/","created_utc":1700000000}}]}}`,
+			afters[page], page, page)
+	}))
+	defer srv.Close()
+
+	c := NewClient("test-agent/1.0")
+	c.BaseURL = srv.URL
+
+	posts, err := c.ListingAll(context.Background(), "golang", 0, 0)
+	if err != nil {
+		t.Fatalf("ListingAll: %v", err)
+	}
+	if len(posts) != 3 {
+		t.Fatalf("len(posts) = %d, want 3", len(posts))
+	}
+	if want := []string{"", "t3_page2", "t3_page3"}; fmt.Sprint(requests) != fmt.Sprint(want) {
+		t.Errorf("requested after values = %v, want %v", requests, want)
+	}
+}
+
+func TestClientListingAllRespectsMaxPages(t *testing.T) {
+	requestCount := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"data":{"after":"t3_next","children":[{"data":{"id":"post%d","subreddit":"golang","permalink":"/x/","created_utc":1700000000}}]}}`, requestCount)
+	}))
+	defer srv.Close()
+
+	c := NewClient("test-agent/1.0")
+	c.BaseURL = srv.URL
+
+	posts, err := c.ListingAll(context.Background(), "golang", 0, 2)
+	if err != nil {
+		t.Fatalf("ListingAll: %v", err)
+	}
+	if requestCount != 2 {
+		t.Errorf("requestCount = %d, want 2", requestCount)
+	}
+	if len(posts) != 2 {
+		t.Errorf("len(posts) = %d, want 2", len(posts))
+	}
+}
+
+func TestClientListingAllBacksOffOnRateLimit(t *testing.T) {
+	requestCount := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Ratelimit-Remaining", "1")
+		w.Header().Set("X-Ratelimit-Reset", "30")
+		if requestCount >= 2 {
+			fmt.Fprint(w, `{"data":{"after":"","children":[]}}`)
+			return
+		}
+		fmt.Fprint(w, `{"data":{"after":"t3_next","children":[]}}`)
+	}))
+	defer srv.Close()
+
+	c := NewClient("test-agent/1.0")
+	c.BaseURL = srv.URL
+
+	var slept time.Duration
+	c.sleep = func(_ context.Context, d time.Duration) { slept = d }
+
+	if _, err := c.ListingAll(context.Background(), "golang", 0, 0); err != nil {
+		t.Fatalf("ListingAll: %v", err)
+	}
+	if requestCount != 2 {
+		t.Fatalf("requestCount = %d, want 2", requestCount)
+	}
+	if slept != 30*time.Second {
+		t.Errorf("slept = %v, want 30s", slept)
 	}
 }
 
