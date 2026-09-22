@@ -3,6 +3,7 @@
   "db_path": "reddit-archiver.db",
   "download_path": "downloads",
   "download_concurrency": 4,
+  "perceptual_hash_distance": 8,
   "subreddits": [
     "earthporn",
     "wallpapers"

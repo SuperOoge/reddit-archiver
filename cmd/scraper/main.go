@@ -20,12 +20,17 @@ import (
 	"github.com/SuperOoge/reddit-archiver/internal/downloader"
 	"github.com/SuperOoge/reddit-archiver/internal/models"
 	"github.com/SuperOoge/reddit-archiver/internal/reddit"
+	"github.com/corona10/goimagehash"
 	"gorm.io/gorm"
 )
 
 // defaultDownloadConcurrency is used when Config.DownloadConcurrency isn't
 // set to a positive value.
 const defaultDownloadConcurrency = 4
+
+// defaultPerceptualHashDistance is used when
+// Config.PerceptualHashDistance isn't set to a positive value.
+const defaultPerceptualHashDistance = 8
 
 func main() {
 	os.Exit(run())
@@ -61,11 +66,12 @@ func run() int {
 	downloadClient := &http.Client{Timeout: 2 * time.Minute}
 
 	s := scraper{
-		db:                  gormDB,
-		reddit:              redditClient,
-		downloadClient:      downloadClient,
-		downloadRootDir:     cfg.DownloadPath,
-		downloadConcurrency: cfg.DownloadConcurrency,
+		db:                     gormDB,
+		reddit:                 redditClient,
+		downloadClient:         downloadClient,
+		downloadRootDir:        cfg.DownloadPath,
+		downloadConcurrency:    cfg.DownloadConcurrency,
+		perceptualHashDistance: cfg.PerceptualHashDistance,
 	}
 	if err := s.run(context.Background(), *subreddit, *pages); err != nil {
 		log.Printf("scrape %s: %v", *subreddit, err)
@@ -84,6 +90,11 @@ type scraper struct {
 	// downloadConcurrency caps how many downloadPost calls scrapePages runs
 	// at once. <= 0 falls back to defaultDownloadConcurrency.
 	downloadConcurrency int
+
+	// perceptualHashDistance is the max Hamming distance for two images to
+	// count as near-duplicates. <= 0 falls back to
+	// defaultPerceptualHashDistance.
+	perceptualHashDistance int
 }
 
 func (s scraper) run(ctx context.Context, subreddit string, pages int) error {
@@ -232,9 +243,79 @@ func (s scraper) downloadPost(ctx context.Context, p models.Post, destDir string
 		"sha256":        result.SHA256,
 		"downloaded_at": now,
 	}
+	if result.PHash != "" {
+		updates["p_hash"] = result.PHash
+		if dupID, ok := s.findNearDuplicate(p.ID, result.PHash); ok {
+			updates["duplicate_of_id"] = dupID
+		}
+	}
 	if err := s.db.Model(&models.Post{}).Where("id = ?", p.ID).Updates(updates).Error; err != nil {
 		log.Printf("record download for post %s: %v", p.ExternalID, err)
 		return false
 	}
 	return true
+}
+
+// findNearDuplicate looks for an already-hashed post whose perceptual hash
+// is within s.perceptualHashDistance of hash, excluding postID itself. It's
+// a linear scan over every hashed post — fine at the scale this tool
+// targets, but would need a proper nearest-neighbor index to stay fast on a
+// very large archive.
+//
+// Because scrapePages downloads concurrently, this only sees posts whose
+// row was already committed before this call started; two near-duplicates
+// downloaded in the same batch won't necessarily catch each other — a later
+// scrape (or a re-run of this detection) would.
+func (s scraper) findNearDuplicate(postID uint, hash string) (id uint, found bool) {
+	target, err := parseImageHash(hash)
+	if err != nil {
+		return 0, false
+	}
+
+	threshold := s.perceptualHashDistance
+	if threshold <= 0 {
+		threshold = defaultPerceptualHashDistance
+	}
+
+	var candidates []models.Post
+	if err := s.db.Select("id", "p_hash").Where("p_hash != '' AND id != ?", postID).Find(&candidates).Error; err != nil {
+		return 0, false
+	}
+
+	for _, c := range candidates {
+		other, err := parseImageHash(c.PHash)
+		if err != nil {
+			continue
+		}
+		if dist, err := target.Distance(other); err == nil && dist <= threshold {
+			return c.ID, true
+		}
+	}
+	return 0, false
+}
+
+// parseImageHash parses a hash string in goimagehash's ToString format
+// ("d:0123456789abcdef"). goimagehash.ImageHashFromString does this too but
+// is deprecated in favor of LoadImageHash, which reads its own gob encoding
+// rather than the hex string this package stores in Post.PHash — so we
+// parse the (still-documented) string format ourselves instead.
+func parseImageHash(s string) (*goimagehash.ImageHash, error) {
+	var kindStr string
+	var hash uint64
+	if _, err := fmt.Sscanf(s, "%1s:%016x", &kindStr, &hash); err != nil {
+		return nil, fmt.Errorf("parse image hash %q: %w", s, err)
+	}
+
+	var kind goimagehash.Kind
+	switch kindStr {
+	case "a":
+		kind = goimagehash.AHash
+	case "p":
+		kind = goimagehash.PHash
+	case "d":
+		kind = goimagehash.DHash
+	default:
+		return nil, fmt.Errorf("parse image hash %q: unknown kind %q", s, kindStr)
+	}
+	return goimagehash.NewImageHash(hash, kind), nil
 }

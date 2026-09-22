@@ -31,6 +31,18 @@ type Post struct {
 	LocalPath    string
 	SHA256       string
 	DownloadedAt *time.Time
+
+	// PHash is a difference-hash of the downloaded image (see
+	// internal/downloader), serialized via goimagehash's ToString. Empty
+	// when the media isn't an image, hasn't been downloaded, or hashing
+	// failed.
+	PHash string `gorm:"index"`
+
+	// DuplicateOfID, when set, is the ID of an earlier Post whose image
+	// this one is a near-duplicate of (perceptual-hash distance within
+	// Config.PerceptualHashDistance). This only records the detection —
+	// the file is still downloaded and saved either way.
+	DuplicateOfID *uint `gorm:"index"`
 }
 
 // TableName pins the table name so it stays stable across GORM's

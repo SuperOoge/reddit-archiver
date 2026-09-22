@@ -25,12 +25,15 @@ func TestLoadDefaultsWithNoFiles(t *testing.T) {
 	if cfg.DownloadConcurrency != 4 {
 		t.Errorf("DownloadConcurrency = %d, want default 4", cfg.DownloadConcurrency)
 	}
+	if cfg.PerceptualHashDistance != 8 {
+		t.Errorf("PerceptualHashDistance = %d, want default 8", cfg.PerceptualHashDistance)
+	}
 }
 
 func TestLoadFromConfigFile(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
-	body := `{"user_agent":"custom-agent/1.0","db_path":"custom.db","download_path":"media","download_concurrency":8,"subreddits":["golang","test"]}`
+	body := `{"user_agent":"custom-agent/1.0","db_path":"custom.db","download_path":"media","download_concurrency":8,"perceptual_hash_distance":3,"subreddits":["golang","test"]}`
 	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -50,6 +53,9 @@ func TestLoadFromConfigFile(t *testing.T) {
 	}
 	if cfg.DownloadConcurrency != 8 {
 		t.Errorf("DownloadConcurrency = %d, want 8", cfg.DownloadConcurrency)
+	}
+	if cfg.PerceptualHashDistance != 3 {
+		t.Errorf("PerceptualHashDistance = %d, want 3", cfg.PerceptualHashDistance)
 	}
 	if len(cfg.Subreddits) != 2 || cfg.Subreddits[0] != "golang" {
 		t.Errorf("Subreddits = %v, unexpected", cfg.Subreddits)

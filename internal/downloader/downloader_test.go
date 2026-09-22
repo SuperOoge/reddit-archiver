@@ -1,15 +1,42 @@
 package downloader
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 )
+
+// testPNG renders a small checkerboard PNG whose difference-hash won't be
+// all-zero (a solid-color image hashes to 0, which makes for a weak test
+// fixture), offset so callers can produce two distinguishable images.
+func testPNG(t *testing.T, offset int) []byte {
+	t.Helper()
+	img := image.NewGray(image.Rect(0, 0, 16, 16))
+	for y := 0; y < 16; y++ {
+		for x := 0; x < 16; x++ {
+			v := uint8(0)
+			if (x+y+offset)%2 == 0 {
+				v = 255
+			}
+			img.SetGray(x, y, color.Gray{Y: v})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("png.Encode: %v", err)
+	}
+	return buf.Bytes()
+}
 
 func TestDownload(t *testing.T) {
 	const body = "pretend this is image bytes"
@@ -133,6 +160,84 @@ func TestDownloadMkdirFailure(t *testing.T) {
 	destDir := filepath.Join(blocker, "sub")
 	if _, err := Download(context.Background(), srv.Client(), srv.URL+"/image.png", destDir); err == nil {
 		t.Fatal("Download: expected error when destDir can't be created, got nil")
+	}
+}
+
+func TestDownloadComputesPerceptualHashForImages(t *testing.T) {
+	body := testPNG(t, 0)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	res, err := Download(context.Background(), srv.Client(), srv.URL+"/image.png", dir)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if res.PHash == "" {
+		t.Fatal("PHash is empty, want a computed hash")
+	}
+	if matched, _ := regexp.MatchString(`^d:[0-9a-f]{16}$`, res.PHash); !matched {
+		t.Errorf("PHash = %q, want goimagehash's \"d:<16 hex chars>\" format", res.PHash)
+	}
+}
+
+func TestDownloadPerceptualHashDistinguishesImages(t *testing.T) {
+	dir := t.TempDir()
+
+	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(testPNG(t, 0))
+	}))
+	defer srv1.Close()
+	res1, err := Download(context.Background(), srv1.Client(), srv1.URL+"/a.png", dir)
+	if err != nil {
+		t.Fatalf("Download a: %v", err)
+	}
+
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(testPNG(t, 1))
+	}))
+	defer srv2.Close()
+	res2, err := Download(context.Background(), srv2.Client(), srv2.URL+"/b.png", dir)
+	if err != nil {
+		t.Fatalf("Download b: %v", err)
+	}
+
+	if res1.PHash == res2.PHash {
+		t.Error("an inverted checkerboard hashed identically to the original, want distinct hashes")
+	}
+}
+
+func TestDownloadNoPerceptualHashForVideo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("not actually a video, doesn't matter"))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	res, err := Download(context.Background(), srv.Client(), srv.URL+"/clip.mp4", dir)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if res.PHash != "" {
+		t.Errorf("PHash = %q, want empty for a video extension", res.PHash)
+	}
+}
+
+func TestDownloadCorruptImageYieldsEmptyHashNotError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("this is not a valid png"))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	res, err := Download(context.Background(), srv.Client(), srv.URL+"/broken.png", dir)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if res.PHash != "" {
+		t.Errorf("PHash = %q, want empty for undecodable image data", res.PHash)
 	}
 }
 
