@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SuperOoge/reddit-archiver/internal/config"
@@ -20,6 +22,10 @@ import (
 	"github.com/SuperOoge/reddit-archiver/internal/reddit"
 	"gorm.io/gorm"
 )
+
+// defaultDownloadConcurrency is used when Config.DownloadConcurrency isn't
+// set to a positive value.
+const defaultDownloadConcurrency = 4
 
 func main() {
 	os.Exit(run())
@@ -55,10 +61,11 @@ func run() int {
 	downloadClient := &http.Client{Timeout: 2 * time.Minute}
 
 	s := scraper{
-		db:              gormDB,
-		reddit:          redditClient,
-		downloadClient:  downloadClient,
-		downloadRootDir: cfg.DownloadPath,
+		db:                  gormDB,
+		reddit:              redditClient,
+		downloadClient:      downloadClient,
+		downloadRootDir:     cfg.DownloadPath,
+		downloadConcurrency: cfg.DownloadConcurrency,
 	}
 	if err := s.run(context.Background(), *subreddit, *pages); err != nil {
 		log.Printf("scrape %s: %v", *subreddit, err)
@@ -73,6 +80,10 @@ type scraper struct {
 	reddit          *reddit.Client
 	downloadClient  *http.Client
 	downloadRootDir string
+
+	// downloadConcurrency caps how many downloadPost calls scrapePages runs
+	// at once. <= 0 falls back to defaultDownloadConcurrency.
+	downloadConcurrency int
 }
 
 func (s scraper) run(ctx context.Context, subreddit string, pages int) error {
@@ -112,28 +123,66 @@ func (s scraper) run(ctx context.Context, subreddit string, pages int) error {
 	return nil
 }
 
+// scrapePages walks the subreddit's listing, storing every post it sees, and
+// fans out media downloads to a bounded pool of workers so a scrape with a
+// lot of direct-media posts doesn't download them one at a time.
 func (s scraper) scrapePages(ctx context.Context, subreddit string, pages int) (found, downloaded int, err error) {
 	destDir := filepath.Join(s.downloadRootDir, subreddit)
+
+	concurrency := s.downloadConcurrency
+	if concurrency <= 0 {
+		concurrency = defaultDownloadConcurrency
+	}
+
+	jobs := make(chan models.Post)
+	var downloadedCount atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for p := range jobs {
+				if s.downloadPost(ctx, p, destDir) {
+					downloadedCount.Add(1)
+				}
+			}
+		}()
+	}
+
+	found, err = s.enqueuePages(ctx, subreddit, pages, jobs)
+
+	close(jobs)
+	wg.Wait()
+
+	return found, int(downloadedCount.Load()), err
+}
+
+// enqueuePages walks the listing and sends every media post's stored row on
+// jobs for a worker to download. It returns however many posts it stored
+// before stopping, even on error, so the caller can still report progress.
+func (s scraper) enqueuePages(ctx context.Context, subreddit string, pages int, jobs chan<- models.Post) (found int, err error) {
 	after := ""
 
 	for page := 0; page < pages; page++ {
 		posts, next, err := s.reddit.Listing(ctx, subreddit, after, 100)
 		if err != nil {
-			return found, downloaded, fmt.Errorf("fetch page %d: %w", page, err)
+			return found, fmt.Errorf("fetch page %d: %w", page, err)
 		}
 
 		for _, p := range posts {
 			stored, err := s.upsertPost(p)
 			if err != nil {
-				return found, downloaded, fmt.Errorf("store post %s: %w", p.ExternalID, err)
+				return found, fmt.Errorf("store post %s: %w", p.ExternalID, err)
 			}
 			found++
 
 			if stored.LocalPath != "" || !downloader.LooksLikeMedia(stored.URL) {
 				continue
 			}
-			if s.downloadPost(ctx, stored, destDir) {
-				downloaded++
+			select {
+			case jobs <- stored:
+			case <-ctx.Done():
+				return found, ctx.Err()
 			}
 		}
 
@@ -143,7 +192,7 @@ func (s scraper) scrapePages(ctx context.Context, subreddit string, pages int) (
 		after = next
 	}
 
-	return found, downloaded, nil
+	return found, nil
 }
 
 // upsertPost returns the stored row for p, creating it if this

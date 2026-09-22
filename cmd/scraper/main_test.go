@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/SuperOoge/reddit-archiver/internal/db"
 	"github.com/SuperOoge/reddit-archiver/internal/models"
@@ -152,5 +156,141 @@ func TestScraperRunSkipsAlreadyDownloaded(t *testing.T) {
 
 	if callCount != 1 {
 		t.Errorf("media server was hit %d time(s), want 1 (second run should skip the already-downloaded post)", callCount)
+	}
+}
+
+func TestScraperRunDownloadsConcurrently(t *testing.T) {
+	const numPosts = 8
+
+	var mu sync.Mutex
+	current, maxConcurrent := 0, 0
+
+	mediaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		current++
+		if current > maxConcurrent {
+			maxConcurrent = current
+		}
+		mu.Unlock()
+
+		time.Sleep(20 * time.Millisecond)
+
+		mu.Lock()
+		current--
+		mu.Unlock()
+
+		_, _ = w.Write([]byte("bytes"))
+	}))
+	defer mediaSrv.Close()
+
+	var children strings.Builder
+	for i := 0; i < numPosts; i++ {
+		if i > 0 {
+			children.WriteString(",")
+		}
+		fmt.Fprintf(&children, `{"data": {"id": "post%d", "subreddit": "golang", "url": "%s/pic%d.png", "permalink": "/r/golang/comments/post%d/x/", "created_utc": 1700000000}}`,
+			i, mediaSrv.URL, i, i)
+	}
+	listing := `{"data": {"after": "", "children": [` + children.String() + `]}}`
+
+	redditSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(listing))
+	}))
+	defer redditSrv.Close()
+
+	dir := t.TempDir()
+	gormDB, err := db.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+
+	redditClient := reddit.NewClient("test-agent/1.0")
+	redditClient.BaseURL = redditSrv.URL
+
+	s := scraper{
+		db:                  gormDB,
+		reddit:              redditClient,
+		downloadClient:      mediaSrv.Client(),
+		downloadRootDir:     filepath.Join(dir, "downloads"),
+		downloadConcurrency: 4,
+	}
+
+	if err := s.run(context.Background(), "golang", 1); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	var scrapeRun models.ScrapeRun
+	if err := gormDB.First(&scrapeRun).Error; err != nil {
+		t.Fatalf("query scrape run: %v", err)
+	}
+	if scrapeRun.PostsFound != numPosts {
+		t.Errorf("PostsFound = %d, want %d", scrapeRun.PostsFound, numPosts)
+	}
+
+	var downloadedCount int64
+	if err := gormDB.Model(&models.Post{}).Where("local_path != ''").Count(&downloadedCount).Error; err != nil {
+		t.Fatalf("count downloaded posts: %v", err)
+	}
+	if downloadedCount != numPosts {
+		t.Errorf("downloaded posts = %d, want %d", downloadedCount, numPosts)
+	}
+
+	mu.Lock()
+	got := maxConcurrent
+	mu.Unlock()
+	if got < 2 {
+		t.Errorf("maxConcurrent = %d, want > 1 (downloads should overlap under the worker pool)", got)
+	}
+}
+
+func TestScraperRunDefaultsConcurrencyWhenUnset(t *testing.T) {
+	mediaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("bytes"))
+	}))
+	defer mediaSrv.Close()
+
+	listing := `{
+		"data": {
+			"after": "",
+			"children": [
+				{"data": {"id": "abc123", "subreddit": "golang", "url": "` + mediaSrv.URL + `/pic.png", "permalink": "/r/golang/comments/abc123/x/", "created_utc": 1700000000}}
+			]
+		}
+	}`
+	redditSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(listing))
+	}))
+	defer redditSrv.Close()
+
+	dir := t.TempDir()
+	gormDB, err := db.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+
+	redditClient := reddit.NewClient("test-agent/1.0")
+	redditClient.BaseURL = redditSrv.URL
+
+	// downloadConcurrency left at its zero value: scrapePages should fall
+	// back to defaultDownloadConcurrency rather than deadlock or panic.
+	s := scraper{
+		db:              gormDB,
+		reddit:          redditClient,
+		downloadClient:  mediaSrv.Client(),
+		downloadRootDir: filepath.Join(dir, "downloads"),
+	}
+
+	if err := s.run(context.Background(), "golang", 1); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	var post models.Post
+	if err := gormDB.First(&post).Error; err != nil {
+		t.Fatalf("query post: %v", err)
+	}
+	if post.LocalPath == "" {
+		t.Error("LocalPath is empty, want a downloaded file path")
 	}
 }

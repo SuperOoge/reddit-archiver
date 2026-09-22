@@ -25,6 +25,11 @@ type Config struct {
 	// DownloadPath is the root directory media files are saved under.
 	DownloadPath string `json:"download_path"`
 
+	// DownloadConcurrency caps how many media downloads a scrape runs at
+	// once. Kept conservative by default so a large scrape doesn't hammer
+	// whatever host is actually serving the media.
+	DownloadConcurrency int `json:"download_concurrency"`
+
 	// Subreddits is the default set of subreddits to scrape when none are
 	// passed on the command line.
 	Subreddits []string `json:"subreddits"`
@@ -35,9 +40,10 @@ type Config struct {
 // defaults, and a missing .env file is silently skipped.
 func Load(path, envPath string) (*Config, error) {
 	cfg := &Config{
-		UserAgent:    "reddit-archiver/0.1 (by u/replace-me)",
-		DBPath:       "reddit-archiver.db",
-		DownloadPath: "downloads",
+		UserAgent:           "reddit-archiver/0.1 (by u/replace-me)",
+		DBPath:              "reddit-archiver.db",
+		DownloadPath:        "downloads",
+		DownloadConcurrency: 4,
 	}
 
 	if data, err := os.ReadFile(path); err == nil { // #nosec G304 -- path is an operator-supplied CLI flag, not untrusted input
