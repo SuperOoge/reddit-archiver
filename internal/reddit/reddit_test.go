@@ -114,8 +114,9 @@ func TestClientListingAllPaginatesUntilExhausted(t *testing.T) {
 		requests = append(requests, r.URL.Query().Get("after"))
 		page := len(requests) - 1
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"data":{"after":%q,"children":[{"data":{"id":"post%d","subreddit":"golang","permalink":"/r/golang/comments/post%d/x/","created_utc":1700000000}}]}}`,
+		body := fmt.Sprintf(`{"data":{"after":%q,"children":[{"data":{"id":"post%d","subreddit":"golang","permalink":"/r/golang/comments/post%d/x/","created_utc":1700000000}}]}}`,
 			afters[page], page, page)
+		_, _ = w.Write([]byte(body))
 	}))
 	defer srv.Close()
 
@@ -140,7 +141,8 @@ func TestClientListingAllRespectsMaxPages(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"data":{"after":"t3_next","children":[{"data":{"id":"post%d","subreddit":"golang","permalink":"/x/","created_utc":1700000000}}]}}`, requestCount)
+		body := fmt.Sprintf(`{"data":{"after":"t3_next","children":[{"data":{"id":"post%d","subreddit":"golang","permalink":"/x/","created_utc":1700000000}}]}}`, requestCount)
+		_, _ = w.Write([]byte(body))
 	}))
 	defer srv.Close()
 
@@ -168,10 +170,10 @@ func TestClientListingAllBacksOffOnRateLimit(t *testing.T) {
 		w.Header().Set("X-Ratelimit-Remaining", "1")
 		w.Header().Set("X-Ratelimit-Reset", "30")
 		if requestCount >= 2 {
-			fmt.Fprint(w, `{"data":{"after":"","children":[]}}`)
+			_, _ = w.Write([]byte(`{"data":{"after":"","children":[]}}`))
 			return
 		}
-		fmt.Fprint(w, `{"data":{"after":"t3_next","children":[]}}`)
+		_, _ = w.Write([]byte(`{"data":{"after":"t3_next","children":[]}}`))
 	}))
 	defer srv.Close()
 
