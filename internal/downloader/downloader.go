@@ -24,10 +24,11 @@ import (
 )
 
 // mediaExtensions are file extensions this downloader knows how to save as
-// direct media. It intentionally doesn't cover indirect media — Reddit
-// gallery pages, v.redd.it DASH manifests, imgur album pages — which need
-// their own resolution step before there's a direct URL to fetch; see
-// CONTRIBUTING.md.
+// direct media. It intentionally doesn't understand indirect media URLs
+// itself — v.redd.it DASH manifests, imgur album pages — which need their
+// own resolution step before there's a direct URL to fetch; see
+// CONTRIBUTING.md. Reddit gallery posts are already resolved upstream, in
+// internal/reddit's expandPost, before a URL ever reaches this package.
 var mediaExtensions = map[string]bool{
 	".jpg":  true,
 	".jpeg": true,

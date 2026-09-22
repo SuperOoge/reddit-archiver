@@ -154,6 +154,109 @@ func TestScraperRunEndToEnd(t *testing.T) {
 	}
 }
 
+func TestScraperRunDownloadsGalleryImages(t *testing.T) {
+	const img1Body = "first gallery image"
+	const img2Body = "second gallery image"
+
+	mediaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/img1.jpg":
+			_, _ = w.Write([]byte(img1Body))
+		case "/img2.jpg":
+			_, _ = w.Write([]byte(img2Body))
+		}
+	}))
+	defer mediaSrv.Close()
+
+	listing := `{
+		"data": {
+			"after": "",
+			"children": [
+				{
+					"data": {
+						"id": "gallery1",
+						"subreddit": "golang",
+						"title": "a gallery post",
+						"url": "https://www.reddit.com/gallery/gallery1",
+						"permalink": "/r/golang/comments/gallery1/x/",
+						"created_utc": 1700000000,
+						"is_gallery": true,
+						"gallery_data": {"items": [{"media_id": "a"}, {"media_id": "b"}]},
+						"media_metadata": {
+							"a": {"status": "valid", "e": "Image", "s": {"u": "` + mediaSrv.URL + `/img1.jpg"}},
+							"b": {"status": "valid", "e": "Image", "s": {"u": "` + mediaSrv.URL + `/img2.jpg"}}
+						}
+					}
+				}
+			]
+		}
+	}`
+	redditSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(listing))
+	}))
+	defer redditSrv.Close()
+
+	dir := t.TempDir()
+	gormDB, err := db.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+
+	redditClient := reddit.NewClient("test-agent/1.0")
+	redditClient.BaseURL = redditSrv.URL
+
+	s := scraper{
+		db:              gormDB,
+		reddit:          redditClient,
+		downloadClient:  mediaSrv.Client(),
+		downloadRootDir: filepath.Join(dir, "downloads"),
+	}
+
+	if err := s.run(context.Background(), "golang", 1); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	var posts []models.Post
+	if err := gormDB.Order("external_id").Find(&posts).Error; err != nil {
+		t.Fatalf("query posts: %v", err)
+	}
+	if len(posts) != 2 {
+		t.Fatalf("len(posts) = %d, want 2 (one row per gallery image)", len(posts))
+	}
+
+	for i, want := range []struct {
+		externalID string
+		body       string
+	}{
+		{"gallery1_a", img1Body},
+		{"gallery1_b", img2Body},
+	} {
+		p := posts[i]
+		if p.ExternalID != want.externalID {
+			t.Errorf("posts[%d].ExternalID = %q, want %q", i, p.ExternalID, want.externalID)
+		}
+		if p.LocalPath == "" {
+			t.Errorf("posts[%d]: LocalPath is empty, want a downloaded file path", i)
+		}
+		data, err := os.ReadFile(p.LocalPath)
+		if err != nil {
+			t.Fatalf("ReadFile(%q): %v", p.LocalPath, err)
+		}
+		if string(data) != want.body {
+			t.Errorf("posts[%d] content = %q, want %q", i, data, want.body)
+		}
+	}
+
+	var scrapeRun models.ScrapeRun
+	if err := gormDB.First(&scrapeRun).Error; err != nil {
+		t.Fatalf("query scrape run: %v", err)
+	}
+	if scrapeRun.PostsFound != 2 {
+		t.Errorf("ScrapeRun.PostsFound = %d, want 2", scrapeRun.PostsFound)
+	}
+}
+
 func TestScraperRunSkipsAlreadyDownloaded(t *testing.T) {
 	callCount := 0
 	mediaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
