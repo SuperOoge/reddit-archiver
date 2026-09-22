@@ -107,83 +107,85 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadErr = msg.err
 		return m, nil
 	case tea.KeyMsg:
-		// --- filter mode key handling --------------------------------------
 		if m.filtering {
-			switch msg.String() {
-			case "esc":
-				// Close the filter input, clear the query, show all posts.
-				m.filtering = false
-				m.query = ""
-				m.filtered = applyFilter(m.posts, m.query)
-				m.cursor = 0
-				return m, nil
-			case "enter":
-				// Accept the current filter and return to list navigation.
-				m.filtering = false
-				m.cursor = 0
-				return m, nil
-			case "backspace":
-				if len(m.query) > 0 {
-					m.query = m.query[:len(m.query)-1]
-				} else {
-					// Empty query + backspace acts like esc.
-					m.filtering = false
-					m.query = ""
-				}
-				m.filtered = applyFilter(m.posts, m.query)
-				m.cursor = 0
-				return m, nil
-			default:
-				// Only accept printable characters (len 1 after RuneMsg).
-				if len(msg.String()) == 1 {
-					m.query += msg.String()
-					m.filtered = applyFilter(m.posts, m.query)
-					m.cursor = 0
-					return m, nil
-				}
-				return m, nil
-			}
+			return m.updateFilterKey(msg)
 		}
+		return m.updateNavigationKey(msg)
+	}
+	return m, nil
+}
 
-		// --- normal navigation key handling ---------------------------------
-		switch msg.String() {
-		case "ctrl+c", "q":
-			return m, tea.Quit
-		case "/":
-			// Open filter input.
-			m.filtering = true
+// updateFilterKey handles a key press while the filter input is active.
+func (m model) updateFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		// Close the filter input, clear the query, show all posts.
+		m.filtering = false
+		m.query = ""
+		m.filtered = applyFilter(m.posts, m.query)
+		m.cursor = 0
+	case "enter":
+		// Accept the current filter and return to list navigation.
+		m.filtering = false
+		m.cursor = 0
+	case "backspace":
+		if len(m.query) > 0 {
+			m.query = m.query[:len(m.query)-1]
+		} else {
+			// Empty query + backspace acts like esc.
+			m.filtering = false
 			m.query = ""
+		}
+		m.filtered = applyFilter(m.posts, m.query)
+		m.cursor = 0
+	default:
+		// Only accept printable characters (len 1 after RuneMsg).
+		if len(msg.String()) == 1 {
+			m.query += msg.String()
+			m.filtered = applyFilter(m.posts, m.query)
 			m.cursor = 0
-			return m, nil
-		case "esc":
-			// If there's an active filter, clear it.
-			if m.query != "" {
-				m.query = ""
-				m.filtered = applyFilter(m.posts, m.query)
-				m.cursor = 0
-				return m, nil
-			}
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "down", "j":
-			if m.cursor < len(m.filtered)-1 {
-				m.cursor++
-			}
-		case "pgup":
-			m.cursor -= 10
-			if m.cursor < 0 {
-				m.cursor = 0
-			}
-		case "pgdown":
-			m.cursor += 10
-			if m.cursor >= len(m.filtered) {
-				m.cursor = len(m.filtered) - 1
-			}
-			if m.cursor < 0 {
-				m.cursor = 0
-			}
+		}
+	}
+	return m, nil
+}
+
+// updateNavigationKey handles a key press while browsing the post list.
+func (m model) updateNavigationKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+	case "/":
+		// Open filter input.
+		m.filtering = true
+		m.query = ""
+		m.cursor = 0
+	case "esc":
+		// If there's an active filter, clear it.
+		if m.query != "" {
+			m.query = ""
+			m.filtered = applyFilter(m.posts, m.query)
+			m.cursor = 0
+		}
+	case "up", "k":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+	case "down", "j":
+		if m.cursor < len(m.filtered)-1 {
+			m.cursor++
+		}
+	case "pgup":
+		m.cursor -= 10
+		if m.cursor < 0 {
+			m.cursor = 0
+		}
+	case "pgdown":
+		m.cursor += 10
+		if m.cursor >= len(m.filtered) {
+			m.cursor = len(m.filtered) - 1
+		}
+		if m.cursor < 0 {
+			m.cursor = 0
 		}
 	}
 	return m, nil
